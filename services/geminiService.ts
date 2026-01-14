@@ -1,9 +1,44 @@
 
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
 import { AIConfig } from "../types";
 
 const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+};
+
+export const suggestPrompts = async (base64Image: string, mimeType: string): Promise<string[]> => {
+  const ai = getAIClient();
+  const response: GenerateContentResponse = await ai.models.generateContent({
+    model: 'gemini-3-flash-preview',
+    contents: [
+      {
+        parts: [
+          {
+            inlineData: {
+              data: base64Image.split(',')[1],
+              mimeType: mimeType,
+            },
+          },
+          {
+            text: "Analyze this product and suggest 3 creative, high-end commercial background descriptions for a product photo shoot. Return ONLY a JSON array of 3 strings."
+          }
+        ]
+      }
+    ],
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: Type.ARRAY,
+        items: { type: Type.STRING }
+      }
+    }
+  });
+
+  try {
+    return JSON.parse(response.text || "[]");
+  } catch (e) {
+    return ["Premium studio setting", "Nature background with soft lighting", "Minimalist marble surface"];
+  }
 };
 
 export const generateSingleProductScene = async (

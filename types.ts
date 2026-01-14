@@ -22,10 +22,17 @@ export interface AIConfig {
   topP: number;
 }
 
+export interface ImageFilters {
+  brightness: number;
+  contrast: number;
+  saturation: number;
+}
+
 export enum GenerationStatus {
   IDLE = 'IDLE',
   UPLOADING = 'UPLOADING',
   GENERATING = 'GENERATING',
   SUCCESS = 'SUCCESS',
-  ERROR = 'ERROR'
+  ERROR = 'ERROR',
+  SUGGESTING = 'SUGGESTING'
 }
