@@ -121,6 +121,54 @@ export const generateProductSceneVariations = async (
   return Promise.all(tasks);
 };
 
+export const eraseObjectFromImage = async (
+  image: string,
+  maskImage: string
+): Promise<string> => {
+  const ai = getAIClient();
+  
+  // Prompt instructions for inpainting using the mask
+  const prompt = `The second image provided is a mask where white pixels indicate the area to be removed (erased). 
+  Task: Modify the first image by removing the objects or artifacts covered by the white mask area. 
+  Fill in the erased area seamlessly to match the surrounding background texture, lighting, and context. 
+  Ensure the result looks natural and high quality.`;
+
+  const response: GenerateContentResponse = await ai.models.generateContent({
+    model: 'gemini-2.5-flash-image',
+    contents: {
+      parts: [
+        {
+          inlineData: {
+            data: image.split(',')[1],
+            mimeType: 'image/png', // Assuming base64 is png or convert
+          },
+        },
+        {
+          inlineData: {
+            data: maskImage.split(',')[1],
+            mimeType: 'image/png',
+          },
+        },
+        {
+          text: prompt
+        }
+      ]
+    }
+  });
+
+  if (!response.candidates || response.candidates.length === 0) {
+    throw new Error("No candidates returned from AI");
+  }
+
+  for (const part of response.candidates[0].content.parts) {
+    if (part.inlineData) {
+      return `data:image/png;base64,${part.inlineData.data}`;
+    }
+  }
+
+  throw new Error("No image data found in response");
+};
+
 export const generateProductVideo = async (image: string, prompt: string): Promise<string> => {
   const ai = getAIClient();
   

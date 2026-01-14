@@ -4,10 +4,10 @@ import {
   X, Camera, Circle, Crop, Layers, Heart, Trash2, Bookmark, 
   Sun, Moon, Box, Tent, Crown, Cpu, Coffee, Settings2, ChevronDown, ChevronUp, Info,
   Undo, Redo, Wand2, Maximize2, SlidersHorizontal, Instagram, Facebook, Tv,
-  Video, Play, MessageSquarePlus, Send, Loader2
+  Video, Play, MessageSquarePlus, Send, Loader2, Eraser, PenTool
 } from 'lucide-react';
 import Cropper, { Area } from 'react-easy-crop';
-import { generateProductSceneVariations, suggestPrompts, refinePromptWithInstruction, generateProductVideo } from './services/geminiService';
+import { generateProductSceneVariations, suggestPrompts, refinePromptWithInstruction, generateProductVideo, eraseObjectFromImage } from './services/geminiService';
 import { GenerationHistory, GenerationStatus, SavedCreation, AIConfig, ImageFilters } from './types';
 import { getHistoryItems, saveHistoryItems, getFavoriteItems, saveFavoriteItems } from './services/storageService';
 
@@ -20,6 +20,8 @@ const PROMPT_CATEGORIES = [
 ];
 
 interface CropStateSnapshot { crop: { x: number; y: number }; zoom: number; aspect: number | undefined; }
+
+interface DrawingPoint { x: number; y: number; dragging: boolean; size: number; }
 
 const App: React.FC = () => {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
@@ -73,6 +75,13 @@ const App: React.FC = () => {
   const [futureCrops, setFutureCrops] = useState<CropStateSnapshot[]>([]);
   const [stableCropState, setStableCropState] = useState<CropStateSnapshot | null>(null);
   const skipHistoryRef = useRef(false);
+
+  // Eraser States
+  const [isEraserMode, setIsEraserMode] = useState(false);
+  const [brushSize, setBrushSize] = useState(30);
+  const [eraserPaths, setEraserPaths] = useState<DrawingPoint[][]>([]);
+  const eraserCanvasRef = useRef<HTMLCanvasElement>(null);
+  const eraserContainerRef = useRef<HTMLDivElement>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -113,6 +122,39 @@ const App: React.FC = () => {
     }, 600);
     return () => clearTimeout(timeout);
   }, [crop, zoom, aspect, isCropping]);
+
+  // Redraw eraser canvas when paths change or mode is active
+  useEffect(() => {
+    if (!isEraserMode || !eraserCanvasRef.current || !resultImages[selectedResultIndex]) return;
+    
+    const canvas = eraserCanvasRef.current;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    // Load image to set canvas dimensions correctly
+    const img = new Image();
+    img.src = resultImages[selectedResultIndex];
+    img.onload = () => {
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      
+      eraserPaths.forEach(path => {
+        if (path.length < 1) return;
+        ctx.beginPath();
+        ctx.strokeStyle = 'rgba(239, 68, 68, 0.6)'; // Red semi-transparent
+        ctx.lineWidth = path[0].size;
+        ctx.moveTo(path[0].x, path[0].y);
+        for(let i = 1; i < path.length; i++) {
+          ctx.lineTo(path[i].x, path[i].y);
+        }
+        ctx.stroke();
+      });
+    };
+  }, [isEraserMode, eraserPaths, selectedResultIndex, resultImages]);
 
   const handleUndoCrop = () => {
     if (pastCrops.length === 0) return;
@@ -226,13 +268,11 @@ const App: React.FC = () => {
     const currentImage = resultImages[selectedResultIndex];
     if (!currentImage) return;
 
-    // Check for API Key selection (required for Veo)
     if (window.aistudio) {
       try {
         const hasKey = await window.aistudio.hasSelectedApiKey();
         if (!hasKey) {
           await window.aistudio.openSelectKey();
-          // After selecting key, we proceed. Race condition mitigation: assuming user selected key if no error.
         }
       } catch (e) {
         console.error("API Key selection cancelled or failed", e);
@@ -246,7 +286,6 @@ const App: React.FC = () => {
       setCurrentVideoUrl(videoUrl);
       setStatus(GenerationStatus.SUCCESS);
       
-      // Update history with video
       setHistory(prev => {
         const newHistory = [...prev];
         if (newHistory[0]) {
@@ -256,7 +295,133 @@ const App: React.FC = () => {
       });
     } catch (e: any) {
       setError(e.message || "Failed to generate video");
-      setStatus(GenerationStatus.SUCCESS); // Revert to success to show image
+      setStatus(GenerationStatus.SUCCESS);
+    }
+  };
+
+  const handleEraseStart = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!isEraserMode || !eraserCanvasRef.current) return;
+    
+    // Prevent scrolling on touch
+    if (e.type === 'touchstart') e.preventDefault();
+
+    const canvas = eraserCanvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+    
+    // Scale coordinates from screen space to canvas internal space
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+    
+    setEraserPaths(prev => [...prev, [{ x, y, dragging: true, size: brushSize }]]);
+  };
+
+  const handleEraseMove = (e: React.MouseEvent | React.TouchEvent) => {
+    if (!isEraserMode || !eraserCanvasRef.current) return;
+    const lastPath = eraserPaths[eraserPaths.length - 1];
+    // Check if we are currently drawing
+    if (!lastPath || !lastPath[lastPath.length - 1].dragging) return;
+    
+    // Prevent scrolling
+    if (e.type === 'touchmove') e.preventDefault();
+    
+    const canvas = eraserCanvasRef.current;
+    const rect = canvas.getBoundingClientRect();
+    const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
+    const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
+
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    
+    const x = (clientX - rect.left) * scaleX;
+    const y = (clientY - rect.top) * scaleY;
+
+    // Append point to current path
+    const newPaths = [...eraserPaths];
+    newPaths[newPaths.length - 1].push({ x, y, dragging: true, size: brushSize });
+    setEraserPaths(newPaths);
+  };
+
+  const handleEraseEnd = () => {
+     if (!isEraserMode || eraserPaths.length === 0) return;
+     const newPaths = [...eraserPaths];
+     const lastPath = newPaths[newPaths.length - 1];
+     if (lastPath && lastPath.length > 0) {
+        lastPath[lastPath.length - 1].dragging = false;
+        setEraserPaths(newPaths);
+     }
+  };
+
+  const handleApplyEraser = async () => {
+    if (eraserPaths.length === 0 || !resultImages[selectedResultIndex]) return;
+
+    try {
+      setStatus(GenerationStatus.ERASING);
+      
+      // Generate Mask Image
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      if (!ctx || !eraserCanvasRef.current) return;
+
+      canvas.width = eraserCanvasRef.current.width;
+      canvas.height = eraserCanvasRef.current.height;
+
+      // Fill Black
+      ctx.fillStyle = 'black';
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Draw Paths White
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      ctx.strokeStyle = 'white';
+      
+      eraserPaths.forEach(path => {
+        if (path.length < 1) return;
+        ctx.beginPath();
+        ctx.lineWidth = path[0].size;
+        ctx.moveTo(path[0].x, path[0].y);
+        for(let i = 1; i < path.length; i++) {
+          ctx.lineTo(path[i].x, path[i].y);
+        }
+        ctx.stroke();
+      });
+
+      const maskDataUrl = canvas.toDataURL('image/png');
+      const originalResult = resultImages[selectedResultIndex];
+
+      const newImage = await eraseObjectFromImage(originalResult, maskDataUrl);
+
+      // Update State
+      setResultImages(prev => {
+        const updated = [...prev];
+        updated[selectedResultIndex] = newImage;
+        return updated;
+      });
+      
+      // Update History
+      setHistory(prev => {
+         const newHistory = [...prev];
+         // Find current history item if possible, or just skip history update for edit?
+         // Better to update recent item
+         if (newHistory.length > 0 && newHistory[0].id === history[0].id) {
+            const updatedResults = [...newHistory[0].resultImages];
+            updatedResults[selectedResultIndex] = newImage;
+            newHistory[0] = { ...newHistory[0], resultImages: updatedResults };
+         }
+         return newHistory;
+      });
+
+      setIsEraserMode(false);
+      setEraserPaths([]);
+      setStatus(GenerationStatus.SUCCESS);
+
+    } catch (e: any) {
+      setError("Eraser failed: " + e.message);
+      setStatus(GenerationStatus.SUCCESS); // Revert to view
     }
   };
 
@@ -266,7 +431,7 @@ const App: React.FC = () => {
     else setSavedCreations(prev => [{ id: Date.now().toString(), image: img, originalImage: selectedImage || '', prompt: backgroundPrompt, timestamp: Date.now(), videoUrl: currentVideoUrl }, ...prev]);
   };
 
-  const reset = () => { setSelectedImage(null); setResultImages([]); setBackgroundPrompt(''); setStatus(GenerationStatus.IDLE); setError(null); stopCamera(); setIsCropping(false); setAiSuggestions([]); setShowComparison(false); setCurrentVideoUrl(undefined); };
+  const reset = () => { setSelectedImage(null); setResultImages([]); setBackgroundPrompt(''); setStatus(GenerationStatus.IDLE); setError(null); stopCamera(); setIsCropping(false); setAiSuggestions([]); setShowComparison(false); setCurrentVideoUrl(undefined); setIsEraserMode(false); setEraserPaths([]); };
 
   const downloadImage = (url: string, name: string) => { const a = document.createElement('a'); a.href = url; a.download = name; a.click(); };
 
@@ -354,20 +519,65 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="flex-1 relative bg-slate-200/50 dark:bg-slate-800/30 rounded-lg overflow-hidden border dark:border-slate-700 flex flex-col items-center justify-center">
-                    {status === GenerationStatus.GENERATING || status === GenerationStatus.GENERATING_VIDEO ? (
+                    {status === GenerationStatus.GENERATING || status === GenerationStatus.GENERATING_VIDEO || status === GenerationStatus.ERASING ? (
                       <div className="flex flex-col items-center gap-4 text-center p-6 animate-pulse">
-                        {status === GenerationStatus.GENERATING_VIDEO ? <Video className="w-16 h-16 text-indigo-600 animate-bounce" /> : <RefreshCw className="w-16 h-16 text-indigo-600 animate-spin" />}
+                        {status === GenerationStatus.GENERATING_VIDEO ? <Video className="w-16 h-16 text-indigo-600 animate-bounce" /> : 
+                         status === GenerationStatus.ERASING ? <Eraser className="w-16 h-16 text-indigo-600 animate-pulse" /> :
+                         <RefreshCw className="w-16 h-16 text-indigo-600 animate-spin" />}
                         <p className="font-bold dark:text-white">
-                          {status === GenerationStatus.GENERATING_VIDEO ? 'Rendering Cinematic Video...' : 'Generating Scenes...'}
+                          {status === GenerationStatus.GENERATING_VIDEO ? 'Rendering Cinematic Video...' : 
+                           status === GenerationStatus.ERASING ? 'Erasing Object...' :
+                           'Generating Scenes...'}
                         </p>
                       </div>
                     ) : resultImages.length > 0 ? (
                       <div className="w-full h-full flex flex-col">
-                        <div className="flex-1 relative bg-white dark:bg-slate-900 flex items-center justify-center p-2 group">
+                        <div className="flex-1 relative bg-white dark:bg-slate-900 flex items-center justify-center p-2 group overflow-hidden">
                           {currentVideoUrl ? (
                             <div className="relative w-full h-full flex items-center justify-center bg-black">
                               <video src={currentVideoUrl} controls autoPlay loop className="max-w-full max-h-full" />
                               <button onClick={() => setCurrentVideoUrl(undefined)} className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full"><X className="w-4 h-4" /></button>
+                            </div>
+                          ) : isEraserMode ? (
+                            <div 
+                                className="relative w-full h-full flex items-center justify-center cursor-crosshair touch-none"
+                                ref={eraserContainerRef}
+                                onMouseDown={handleEraseStart}
+                                onMouseMove={handleEraseMove}
+                                onMouseUp={handleEraseEnd}
+                                onMouseLeave={handleEraseEnd}
+                                onTouchStart={handleEraseStart}
+                                onTouchMove={handleEraseMove}
+                                onTouchEnd={handleEraseEnd}
+                            >
+                                <img 
+                                    src={resultImages[selectedResultIndex]} 
+                                    className="max-w-full max-h-full object-contain pointer-events-none" 
+                                    style={{ opacity: 0.8 }}
+                                />
+                                <canvas 
+                                    ref={eraserCanvasRef}
+                                    className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2"
+                                    style={{
+                                        maxWidth: '100%',
+                                        maxHeight: '100%',
+                                        width: 'auto',
+                                        height: 'auto',
+                                        objectFit: 'contain'
+                                    }}
+                                />
+                                <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/70 text-white px-4 py-2 rounded-full text-xs font-bold pointer-events-none">
+                                    Eraser Mode: Paint over areas to remove
+                                </div>
+                                <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex gap-4 bg-white dark:bg-slate-800 p-2 rounded-xl shadow-lg border dark:border-slate-700">
+                                    <button onClick={() => {setIsEraserMode(false); setEraserPaths([]);}} className="px-4 py-2 rounded-lg text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-700 font-bold text-xs">Cancel</button>
+                                    <div className="flex items-center gap-2 px-2 border-x dark:border-slate-700">
+                                        <Circle className="w-3 h-3" />
+                                        <input type="range" min="5" max="100" value={brushSize} onChange={(e) => setBrushSize(Number(e.target.value))} className="w-20 accent-indigo-600" />
+                                    </div>
+                                    <button onClick={() => setEraserPaths(prev => prev.slice(0, -1))} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg"><Undo className="w-4 h-4" /></button>
+                                    <button onClick={handleApplyEraser} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-xs shadow-lg">Apply Eraser</button>
+                                </div>
                             </div>
                           ) : showComparison ? (
                             <div className="relative w-full h-full overflow-hidden">
@@ -382,7 +592,7 @@ const App: React.FC = () => {
                             <img src={resultImages[selectedResultIndex]} style={{ filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)` }} className="max-w-full max-h-full object-contain" />
                           )}
                           
-                          {!currentVideoUrl && (
+                          {!currentVideoUrl && !isEraserMode && (
                             <>
                               <div className="absolute top-2 left-2 flex gap-2">
                                 <span className="bg-indigo-600 text-white text-[10px] px-2 py-1 rounded font-bold uppercase">Result</span>
@@ -398,15 +608,20 @@ const App: React.FC = () => {
                                 <button onClick={() => downloadImage(resultImages[selectedResultIndex], `result.png`)} className="p-2 bg-white/90 dark:bg-slate-800/90 rounded-full shadow-lg"><Download className="w-5 h-5" /></button>
                               </div>
 
-                              <button onClick={handleGenerateVideo} className="absolute bottom-4 right-4 flex items-center gap-2 px-4 py-2 bg-white/90 dark:bg-slate-800/90 backdrop-blur text-indigo-600 dark:text-indigo-400 font-bold rounded-full shadow-lg hover:bg-white hover:scale-105 transition-all group-hover:translate-y-0 translate-y-2 opacity-0 group-hover:opacity-100">
-                                <Video className="w-4 h-4" /> Animate (Veo)
-                              </button>
+                              <div className="absolute bottom-4 right-4 flex flex-col gap-2">
+                                <button onClick={() => setIsEraserMode(true)} className="flex items-center gap-2 px-4 py-2 bg-white/90 dark:bg-slate-800/90 backdrop-blur text-slate-700 dark:text-slate-200 font-bold rounded-full shadow-lg hover:bg-white hover:scale-105 transition-all opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0 duration-300 delay-75">
+                                    <Eraser className="w-4 h-4" /> AI Eraser
+                                </button>
+                                <button onClick={handleGenerateVideo} className="flex items-center gap-2 px-4 py-2 bg-white/90 dark:bg-slate-800/90 backdrop-blur text-indigo-600 dark:text-indigo-400 font-bold rounded-full shadow-lg hover:bg-white hover:scale-105 transition-all opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0 duration-300">
+                                    <Video className="w-4 h-4" /> Animate (Veo)
+                                </button>
+                              </div>
                             </>
                           )}
                         </div>
                         <div className="h-20 bg-slate-900 dark:bg-black flex items-center gap-2 px-3 overflow-x-auto scrollbar-hide">
                           {resultImages.map((img, idx) => (
-                            <button key={idx} onClick={() => { setSelectedResultIndex(idx); setCurrentVideoUrl(undefined); }} className={`flex-shrink-0 w-12 h-12 rounded border-2 transition-all ${selectedResultIndex === idx ? 'border-indigo-400 scale-110' : 'border-transparent opacity-60'}`}>
+                            <button key={idx} onClick={() => { setSelectedResultIndex(idx); setCurrentVideoUrl(undefined); setIsEraserMode(false); }} className={`flex-shrink-0 w-12 h-12 rounded border-2 transition-all ${selectedResultIndex === idx ? 'border-indigo-400 scale-110' : 'border-transparent opacity-60'}`}>
                               <img src={img} className="w-full h-full object-cover" />
                             </button>
                           ))}
@@ -426,6 +641,7 @@ const App: React.FC = () => {
                         )}
                         
                         {/* Magic Refine Input */}
+                        {!isEraserMode && (
                         <div className="p-3 bg-slate-50 dark:bg-slate-800 border-t dark:border-slate-700 flex gap-2">
                           <div className="flex-1 relative">
                             <MessageSquarePlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -446,6 +662,7 @@ const App: React.FC = () => {
                             {status === GenerationStatus.REFINING ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
                           </button>
                         </div>
+                        )}
                       </div>
                     ) : (
                       <div className="text-slate-400 text-center flex flex-col items-center">
@@ -548,7 +765,7 @@ const App: React.FC = () => {
               <ul className="space-y-4 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
                 <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">1</div> <span><b>Magic Refine:</b> Don't rewrite the whole prompt. Just type "Add a coffee cup" and let AI handle it.</span></li>
                 <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">2</div> <span><b>Cinematic Video:</b> Turn your best still shot into a high-end video ad with one click using Veo.</span></li>
-                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">3</div> <span><b>Social Presets:</b> Use 9:16 for IG Story and 1:1 for main feeds to ensure best fit.</span></li>
+                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">3</div> <span><b>AI Eraser:</b> Use the eraser tool to remove unwanted artifacts or objects. The AI will fill in the background automatically.</span></li>
               </ul>
             </div>
           </div>
