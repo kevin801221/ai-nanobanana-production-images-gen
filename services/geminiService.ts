@@ -13,11 +13,10 @@ export const generateSingleProductScene = async (
 ): Promise<string> => {
   const ai = getAIClient();
   
-  // Adding a slight variation to the prompt to encourage diversity in seeds/results
   const prompt = `Task: Professional Product Background Replacement.
     1. Identify the primary product or object in the image.
     2. Extract and isolate this object perfectly, maintaining its original colors, textures, and details.
-    3. Generate a new background described as: "${backgroundPrompt}". (Variation index: ${variationId})
+    3. Generate a new background described as: "${backgroundPrompt}". (Unique Variation ID: ${variationId}-${Date.now()})
     4. Seamlessly integrate the original object into this new scene.
     5. Ensure realistic lighting, matching shadows, and perspective.
     6. The result must be a high-quality, professional studio product photograph.`;
@@ -38,7 +37,7 @@ export const generateSingleProductScene = async (
       ]
     },
     config: {
-      temperature: 1.0, // Higher temperature for more variation
+      temperature: 1.0,
     }
   });
 
@@ -61,6 +60,7 @@ export const generateProductSceneVariations = async (
   backgroundPrompt: string,
   count: number = 3
 ): Promise<string[]> => {
+  // We run these in sequence or small batches if needed, but parallel is fine for 3-5
   const tasks = Array.from({ length: count }, (_, i) => 
     generateSingleProductScene(base64Image, mimeType, backgroundPrompt, i)
   );
