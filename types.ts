@@ -8,6 +8,20 @@ export interface GenerationHistory {
   timestamp: number;
 }
 
+export interface SavedCreation {
+  id: string;
+  image: string;
+  originalImage: string;
+  prompt: string;
+  timestamp: number;
+}
+
+export interface AIConfig {
+  temperature: number;
+  topK: number;
+  topP: number;
+}
+
 export enum GenerationStatus {
   IDLE = 'IDLE',
   UPLOADING = 'UPLOADING',

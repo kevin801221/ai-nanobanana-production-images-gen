@@ -1,5 +1,6 @@
 
 import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { AIConfig } from "../types";
 
 const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
@@ -9,7 +10,8 @@ export const generateSingleProductScene = async (
   base64Image: string,
   mimeType: string,
   backgroundPrompt: string,
-  variationId: number
+  variationId: number,
+  aiConfig: AIConfig
 ): Promise<string> => {
   const ai = getAIClient();
   
@@ -37,7 +39,9 @@ export const generateSingleProductScene = async (
       ]
     },
     config: {
-      temperature: 1.0,
+      temperature: aiConfig.temperature,
+      topK: aiConfig.topK,
+      topP: aiConfig.topP,
     }
   });
 
@@ -58,11 +62,11 @@ export const generateProductSceneVariations = async (
   base64Image: string,
   mimeType: string,
   backgroundPrompt: string,
-  count: number = 3
+  count: number = 3,
+  aiConfig: AIConfig
 ): Promise<string[]> => {
-  // We run these in sequence or small batches if needed, but parallel is fine for 3-5
   const tasks = Array.from({ length: count }, (_, i) => 
-    generateSingleProductScene(base64Image, mimeType, backgroundPrompt, i)
+    generateSingleProductScene(base64Image, mimeType, backgroundPrompt, i, aiConfig)
   );
   
   return Promise.all(tasks);
