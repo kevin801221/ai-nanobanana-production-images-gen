@@ -1,11 +1,13 @@
 
 import React, { useState, useRef, useCallback } from 'react';
-import { Upload, Image as ImageIcon, Sparkles, History, Download, RefreshCw, X, ArrowRight, Camera, Circle } from 'lucide-react';
+import { Upload, Image as ImageIcon, Sparkles, History, Download, RefreshCw, X, ArrowRight, Camera, Circle, Crop, Check } from 'lucide-react';
+import Cropper, { Area } from 'react-easy-crop';
 import { generateProductScene } from './services/geminiService';
 import { GenerationHistory, GenerationStatus } from './types';
 
 const App: React.FC = () => {
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [tempImage, setTempImage] = useState<string | null>(null);
   const [mimeType, setMimeType] = useState<string>('');
   const [backgroundPrompt, setBackgroundPrompt] = useState<string>('');
   const [status, setStatus] = useState<GenerationStatus>(GenerationStatus.IDLE);
@@ -14,6 +16,13 @@ const App: React.FC = () => {
   const [history, setHistory] = useState<GenerationHistory[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [isCameraActive, setIsCameraActive] = useState(false);
+
+  // Cropping states
+  const [crop, setCrop] = useState({ x: 0, y: 0 });
+  const [zoom, setZoom] = useState(1);
+  const [aspect, setAspect] = useState<number | undefined>(1);
+  const [croppedAreaPixels, setCroppedAreaPixels] = useState<Area | null>(null);
+  const [isCropping, setIsCropping] = useState(false);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -26,9 +35,8 @@ const App: React.FC = () => {
       setMimeType(file.type);
       const reader = new FileReader();
       reader.onloadend = () => {
-        setSelectedImage(reader.result as string);
-        setResultImage(null);
-        setStatus(GenerationStatus.IDLE);
+        setTempImage(reader.result as string);
+        setIsCropping(true);
       };
       reader.readAsDataURL(file);
     }
@@ -70,12 +78,60 @@ const App: React.FC = () => {
       if (ctx) {
         ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
         const dataUrl = canvas.toDataURL('image/jpeg');
-        setSelectedImage(dataUrl);
+        setTempImage(dataUrl);
         setMimeType('image/jpeg');
-        setResultImage(null);
-        setStatus(GenerationStatus.IDLE);
+        setIsCropping(true);
         stopCamera();
       }
+    }
+  };
+
+  const onCropComplete = useCallback((_croppedArea: Area, croppedAreaPixels: Area) => {
+    setCroppedAreaPixels(croppedAreaPixels);
+  }, []);
+
+  const createImage = (url: string): Promise<HTMLImageElement> =>
+    new Promise((resolve, reject) => {
+      const image = new Image();
+      image.addEventListener('load', () => resolve(image));
+      image.addEventListener('error', (error) => reject(error));
+      image.setAttribute('crossOrigin', 'anonymous');
+      image.src = url;
+    });
+
+  const handleCropSave = async () => {
+    if (!tempImage || !croppedAreaPixels) return;
+    try {
+      const image = await createImage(tempImage);
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+
+      if (!ctx) return;
+
+      canvas.width = croppedAreaPixels.width;
+      canvas.height = croppedAreaPixels.height;
+
+      ctx.drawImage(
+        image,
+        croppedAreaPixels.x,
+        croppedAreaPixels.y,
+        croppedAreaPixels.width,
+        croppedAreaPixels.height,
+        0,
+        0,
+        croppedAreaPixels.width,
+        croppedAreaPixels.height
+      );
+
+      const croppedDataUrl = canvas.toDataURL(mimeType || 'image/jpeg');
+      setSelectedImage(croppedDataUrl);
+      setResultImage(null);
+      setIsCropping(false);
+      setTempImage(null);
+      setStatus(GenerationStatus.IDLE);
+    } catch (e) {
+      console.error(e);
+      setError("Failed to crop image.");
     }
   };
 
@@ -91,7 +147,6 @@ const App: React.FC = () => {
       setResultImage(result);
       setStatus(GenerationStatus.SUCCESS);
 
-      // Add to history
       const newHistoryItem: GenerationHistory = {
         id: Date.now().toString(),
         originalImage: selectedImage,
@@ -110,11 +165,13 @@ const App: React.FC = () => {
 
   const reset = () => {
     setSelectedImage(null);
+    setTempImage(null);
     setResultImage(null);
     setBackgroundPrompt('');
     setStatus(GenerationStatus.IDLE);
     setError(null);
     stopCamera();
+    setIsCropping(false);
   };
 
   const downloadImage = (dataUrl: string, filename: string) => {
@@ -155,7 +212,7 @@ const App: React.FC = () => {
             
             {/* Image Preview & Upload Area */}
             <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden min-h-[400px] flex flex-col">
-              {!selectedImage && !isCameraActive ? (
+              {!selectedImage && !isCameraActive && !isCropping ? (
                 <div className="flex-1 p-4 grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div 
                     onClick={() => fileInputRef.current?.click()}
@@ -185,6 +242,66 @@ const App: React.FC = () => {
                     <p className="text-slate-500 text-sm mt-1">Use your device's camera</p>
                   </div>
                 </div>
+              ) : isCropping && tempImage ? (
+                <div className="relative flex-1 bg-slate-900 flex flex-col min-h-[500px]">
+                  <div className="relative flex-1">
+                    <Cropper
+                      image={tempImage}
+                      crop={crop}
+                      zoom={zoom}
+                      aspect={aspect}
+                      onCropChange={setCrop}
+                      onCropComplete={onCropComplete}
+                      onZoomChange={setZoom}
+                    />
+                  </div>
+                  <div className="bg-white p-4 flex flex-col gap-4 border-t border-slate-200">
+                    <div className="flex flex-wrap items-center justify-center gap-3">
+                      <button 
+                        onClick={() => setAspect(1)} 
+                        className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${aspect === 1 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                      >1:1</button>
+                      <button 
+                        onClick={() => setAspect(4/3)} 
+                        className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${aspect === 4/3 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                      >4:3</button>
+                      <button 
+                        onClick={() => setAspect(16/9)} 
+                        className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${aspect === 16/9 ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                      >16:9</button>
+                      <button 
+                        onClick={() => setAspect(undefined)} 
+                        className={`px-4 py-1.5 rounded-full text-xs font-bold transition-all ${aspect === undefined ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+                      >Free</button>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <button 
+                        onClick={() => { setIsCropping(false); setTempImage(null); }}
+                        className="px-6 py-2.5 rounded-xl text-slate-600 font-bold hover:bg-slate-50 flex items-center gap-2"
+                      >
+                        <X className="w-4 h-4" /> Cancel
+                      </button>
+                      <div className="flex-1 max-w-xs px-4">
+                         <input
+                          type="range"
+                          value={zoom}
+                          min={1}
+                          max={3}
+                          step={0.1}
+                          aria-labelledby="Zoom"
+                          onChange={(e) => setZoom(Number(e.target.value))}
+                          className="w-full h-2 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-indigo-600"
+                        />
+                      </div>
+                      <button 
+                        onClick={handleCropSave}
+                        className="px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-bold shadow-lg shadow-indigo-200 flex items-center gap-2 hover:bg-indigo-700 transition-all"
+                      >
+                        <Check className="w-4 h-4" /> Confirm Crop
+                      </button>
+                    </div>
+                  </div>
+                </div>
               ) : isCameraActive ? (
                 <div className="relative flex-1 bg-black flex items-center justify-center overflow-hidden">
                   <video 
@@ -208,7 +325,7 @@ const App: React.FC = () => {
                     >
                       <Circle className="w-14 h-14 text-white fill-white border-4 border-slate-900 rounded-full" />
                     </button>
-                    <div className="w-12" /> {/* Spacer */}
+                    <div className="w-12" />
                   </div>
                   
                   <div className="absolute top-4 left-4 bg-black/50 text-white text-xs px-3 py-1.5 rounded-full backdrop-blur-md flex items-center gap-2">
@@ -226,14 +343,24 @@ const App: React.FC = () => {
                         alt="Original" 
                       />
                       <div className="absolute top-2 left-2 bg-black/50 text-white text-xs px-2 py-1 rounded backdrop-blur-sm">
-                        Original
+                        Cropped Original
                       </div>
-                      <button 
-                        onClick={reset}
-                        className="absolute top-2 right-2 p-1.5 bg-white shadow-md rounded-full text-slate-600 hover:text-red-500 transition-colors opacity-0 group-hover:opacity-100"
-                      >
-                        <X className="w-4 h-4" />
-                      </button>
+                      <div className="absolute top-2 right-2 flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                         <button 
+                          onClick={() => { setTempImage(selectedImage); setIsCropping(true); }}
+                          className="p-1.5 bg-white shadow-md rounded-full text-slate-600 hover:text-indigo-600 transition-colors"
+                          title="Re-crop"
+                        >
+                          <Crop className="w-4 h-4" />
+                        </button>
+                        <button 
+                          onClick={reset}
+                          className="p-1.5 bg-white shadow-md rounded-full text-slate-600 hover:text-red-500 transition-colors"
+                          title="Remove"
+                        >
+                          <X className="w-4 h-4" />
+                        </button>
+                      </div>
                     </div>
 
                     <div className="relative group min-h-[300px] flex items-center justify-center bg-slate-200/50 rounded-lg overflow-hidden border border-slate-300">

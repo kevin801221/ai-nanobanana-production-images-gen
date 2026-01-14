@@ -2,7 +2,8 @@
 export interface GenerationHistory {
   id: string;
   originalImage: string;
-  resultImage: string;
+  resultImages: string[];
+  selectedImageIndex: number;
   prompt: string;
   timestamp: number;
 }

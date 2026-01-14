@@ -5,20 +5,22 @@ const getAIClient = () => {
   return new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
 };
 
-export const generateProductScene = async (
+export const generateSingleProductScene = async (
   base64Image: string,
   mimeType: string,
-  backgroundPrompt: string
+  backgroundPrompt: string,
+  variationId: number
 ): Promise<string> => {
   const ai = getAIClient();
   
-  // Refined prompt to ensure the product is kept intact while background changes
-  const prompt = `Task: Background Replacement and Scene Integration.
-    1. Identify the primary product or object in the provided image.
+  // Adding a slight variation to the prompt to encourage diversity in seeds/results
+  const prompt = `Task: Professional Product Background Replacement.
+    1. Identify the primary product or object in the image.
     2. Extract and isolate this object perfectly, maintaining its original colors, textures, and details.
-    3. Generate a new background described as: "${backgroundPrompt}".
-    4. Seamlessly place the original object into this new background, ensuring realistic lighting, shadows, and perspective integration.
-    5. The final result should look like a professional studio product photograph.`;
+    3. Generate a new background described as: "${backgroundPrompt}". (Variation index: ${variationId})
+    4. Seamlessly integrate the original object into this new scene.
+    5. Ensure realistic lighting, matching shadows, and perspective.
+    6. The result must be a high-quality, professional studio product photograph.`;
 
   const response: GenerateContentResponse = await ai.models.generateContent({
     model: 'gemini-2.5-flash-image',
@@ -26,7 +28,7 @@ export const generateProductScene = async (
       parts: [
         {
           inlineData: {
-            data: base64Image.split(',')[1], // Remove the data:image/png;base64, prefix
+            data: base64Image.split(',')[1],
             mimeType: mimeType,
           },
         },
@@ -34,6 +36,9 @@ export const generateProductScene = async (
           text: prompt
         }
       ]
+    },
+    config: {
+      temperature: 1.0, // Higher temperature for more variation
     }
   });
 
@@ -48,4 +53,17 @@ export const generateProductScene = async (
   }
 
   throw new Error("No image data found in response");
+};
+
+export const generateProductSceneVariations = async (
+  base64Image: string,
+  mimeType: string,
+  backgroundPrompt: string,
+  count: number = 3
+): Promise<string[]> => {
+  const tasks = Array.from({ length: count }, (_, i) => 
+    generateSingleProductScene(base64Image, mimeType, backgroundPrompt, i)
+  );
+  
+  return Promise.all(tasks);
 };
