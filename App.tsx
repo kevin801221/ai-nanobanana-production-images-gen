@@ -1,13 +1,13 @@
-
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { 
   Upload, ImageIcon, Sparkles, History, Download, RefreshCw, 
   X, Camera, Circle, Crop, Layers, Heart, Trash2, Bookmark, 
   Sun, Moon, Box, Tent, Crown, Cpu, Coffee, Settings2, ChevronDown, ChevronUp, Info,
-  Undo, Redo, Wand2, Maximize2, SlidersHorizontal, Instagram, Facebook, Tv
+  Undo, Redo, Wand2, Maximize2, SlidersHorizontal, Instagram, Facebook, Tv,
+  Video, Play, MessageSquarePlus, Send, Loader2
 } from 'lucide-react';
 import Cropper, { Area } from 'react-easy-crop';
-import { generateProductSceneVariations, suggestPrompts } from './services/geminiService';
+import { generateProductSceneVariations, suggestPrompts, refinePromptWithInstruction, generateProductVideo } from './services/geminiService';
 import { GenerationHistory, GenerationStatus, SavedCreation, AIConfig, ImageFilters } from './types';
 import { getHistoryItems, saveHistoryItems, getFavoriteItems, saveFavoriteItems } from './services/storageService';
 
@@ -40,9 +40,12 @@ const App: React.FC = () => {
   
   const [resultImages, setResultImages] = useState<string[]>([]);
   const [selectedResultIndex, setSelectedResultIndex] = useState<number>(0);
+  const [currentVideoUrl, setCurrentVideoUrl] = useState<string | undefined>(undefined);
+  
   const [variationCount, setVariationCount] = useState<number>(3);
   const [activeCategory, setActiveCategory] = useState(PROMPT_CATEGORIES[0].id);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [refineInstruction, setRefineInstruction] = useState('');
 
   // Filters & Comparison State
   const [filters, setFilters] = useState<ImageFilters>({ brightness: 100, contrast: 100, saturation: 100 });
@@ -187,7 +190,7 @@ const App: React.FC = () => {
   const handleGenerate = async () => {
     if (!selectedImage || !backgroundPrompt) return;
     try {
-      setStatus(GenerationStatus.GENERATING); setError(null);
+      setStatus(GenerationStatus.GENERATING); setError(null); setCurrentVideoUrl(undefined);
       const results = await generateProductSceneVariations(selectedImage, mimeType, backgroundPrompt, variationCount, aiConfig);
       setResultImages(results); setSelectedResultIndex(0); setStatus(GenerationStatus.SUCCESS);
       setHistory(prev => [{ id: Date.now().toString(), originalImage: selectedImage, resultImages: results, selectedImageIndex: 0, prompt: backgroundPrompt, timestamp: Date.now() }, ...prev]);
@@ -204,13 +207,66 @@ const App: React.FC = () => {
     } catch (e) { setStatus(GenerationStatus.IDLE); }
   };
 
+  const handleRefinePrompt = async () => {
+    if (!refineInstruction || !backgroundPrompt) return;
+    try {
+      setStatus(GenerationStatus.REFINING);
+      const newPrompt = await refinePromptWithInstruction(backgroundPrompt, refineInstruction);
+      setBackgroundPrompt(newPrompt);
+      setRefineInstruction('');
+      // Auto trigger generation after refinement
+      setStatus(GenerationStatus.GENERATING);
+      const results = await generateProductSceneVariations(selectedImage!, mimeType, newPrompt, variationCount, aiConfig);
+      setResultImages(results); setSelectedResultIndex(0); setStatus(GenerationStatus.SUCCESS);
+      setHistory(prev => [{ id: Date.now().toString(), originalImage: selectedImage!, resultImages: results, selectedImageIndex: 0, prompt: newPrompt, timestamp: Date.now() }, ...prev]);
+    } catch (e) { setStatus(GenerationStatus.IDLE); setError("Failed to refine prompt"); }
+  };
+
+  const handleGenerateVideo = async () => {
+    const currentImage = resultImages[selectedResultIndex];
+    if (!currentImage) return;
+
+    // Check for API Key selection (required for Veo)
+    if (window.aistudio) {
+      try {
+        const hasKey = await window.aistudio.hasSelectedApiKey();
+        if (!hasKey) {
+          await window.aistudio.openSelectKey();
+          // After selecting key, we proceed. Race condition mitigation: assuming user selected key if no error.
+        }
+      } catch (e) {
+        console.error("API Key selection cancelled or failed", e);
+        return;
+      }
+    }
+
+    try {
+      setStatus(GenerationStatus.GENERATING_VIDEO);
+      const videoUrl = await generateProductVideo(currentImage, backgroundPrompt);
+      setCurrentVideoUrl(videoUrl);
+      setStatus(GenerationStatus.SUCCESS);
+      
+      // Update history with video
+      setHistory(prev => {
+        const newHistory = [...prev];
+        if (newHistory[0]) {
+           newHistory[0] = { ...newHistory[0], videoUrl };
+        }
+        return newHistory;
+      });
+    } catch (e: any) {
+      setError(e.message || "Failed to generate video");
+      setStatus(GenerationStatus.SUCCESS); // Revert to success to show image
+    }
+  };
+
   const toggleSaveCreation = (img: string) => {
     const exists = savedCreations.find(s => s.image === img);
     if (exists) setSavedCreations(prev => prev.filter(s => s.image !== img));
-    else setSavedCreations(prev => [{ id: Date.now().toString(), image: img, originalImage: selectedImage || '', prompt: backgroundPrompt, timestamp: Date.now() }, ...prev]);
+    else setSavedCreations(prev => [{ id: Date.now().toString(), image: img, originalImage: selectedImage || '', prompt: backgroundPrompt, timestamp: Date.now(), videoUrl: currentVideoUrl }, ...prev]);
   };
 
-  const reset = () => { setSelectedImage(null); setResultImages([]); setBackgroundPrompt(''); setStatus(GenerationStatus.IDLE); setError(null); stopCamera(); setIsCropping(false); setAiSuggestions([]); setShowComparison(false); };
+  const reset = () => { setSelectedImage(null); setResultImages([]); setBackgroundPrompt(''); setStatus(GenerationStatus.IDLE); setError(null); stopCamera(); setIsCropping(false); setAiSuggestions([]); setShowComparison(false); setCurrentVideoUrl(undefined); };
 
   const downloadImage = (url: string, name: string) => { const a = document.createElement('a'); a.href = url; a.download = name; a.click(); };
 
@@ -298,15 +354,22 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="flex-1 relative bg-slate-200/50 dark:bg-slate-800/30 rounded-lg overflow-hidden border dark:border-slate-700 flex flex-col items-center justify-center">
-                    {status === GenerationStatus.GENERATING ? (
+                    {status === GenerationStatus.GENERATING || status === GenerationStatus.GENERATING_VIDEO ? (
                       <div className="flex flex-col items-center gap-4 text-center p-6 animate-pulse">
-                        <RefreshCw className="w-16 h-16 text-indigo-600 animate-spin" />
-                        <p className="font-bold dark:text-white">Generating Magic...</p>
+                        {status === GenerationStatus.GENERATING_VIDEO ? <Video className="w-16 h-16 text-indigo-600 animate-bounce" /> : <RefreshCw className="w-16 h-16 text-indigo-600 animate-spin" />}
+                        <p className="font-bold dark:text-white">
+                          {status === GenerationStatus.GENERATING_VIDEO ? 'Rendering Cinematic Video...' : 'Generating Scenes...'}
+                        </p>
                       </div>
                     ) : resultImages.length > 0 ? (
                       <div className="w-full h-full flex flex-col">
                         <div className="flex-1 relative bg-white dark:bg-slate-900 flex items-center justify-center p-2 group">
-                          {showComparison ? (
+                          {currentVideoUrl ? (
+                            <div className="relative w-full h-full flex items-center justify-center bg-black">
+                              <video src={currentVideoUrl} controls autoPlay loop className="max-w-full max-h-full" />
+                              <button onClick={() => setCurrentVideoUrl(undefined)} className="absolute top-2 right-2 p-1 bg-black/50 text-white rounded-full"><X className="w-4 h-4" /></button>
+                            </div>
+                          ) : showComparison ? (
                             <div className="relative w-full h-full overflow-hidden">
                               <img src={resultImages[selectedResultIndex]} style={{ filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)` }} className="absolute inset-0 w-full h-full object-contain" />
                               <div className="absolute inset-0 w-full h-full pointer-events-none" style={{ clipPath: `inset(0 ${100 - sliderPos}% 0 0)` }}>
@@ -319,23 +382,31 @@ const App: React.FC = () => {
                             <img src={resultImages[selectedResultIndex]} style={{ filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)` }} className="max-w-full max-h-full object-contain" />
                           )}
                           
-                          <div className="absolute top-2 left-2 flex gap-2">
-                            <span className="bg-indigo-600 text-white text-[10px] px-2 py-1 rounded font-bold uppercase">Result</span>
-                            <button onClick={() => setShowComparison(!showComparison)} className={`p-1 rounded text-[10px] font-bold transition-all ${showComparison ? 'bg-orange-500 text-white' : 'bg-black/50 text-white hover:bg-black/70'}`}>
-                              {showComparison ? 'Exit Side-by-Side' : 'Compare Before/After'}
-                            </button>
-                          </div>
-                          
-                          <div className="absolute top-2 right-2 flex gap-2">
-                            <button onClick={() => toggleSaveCreation(resultImages[selectedResultIndex])} className={`p-2 rounded-full shadow-lg ${savedCreations.some(s => s.image === resultImages[selectedResultIndex]) ? 'bg-pink-500 text-white' : 'bg-white/90 dark:bg-slate-800/90 text-slate-400'}`}>
-                              <Heart className={`w-5 h-5 ${savedCreations.some(s => s.image === resultImages[selectedResultIndex]) ? 'fill-white' : ''}`} />
-                            </button>
-                            <button onClick={() => downloadImage(resultImages[selectedResultIndex], `result.png`)} className="p-2 bg-white/90 dark:bg-slate-800/90 rounded-full shadow-lg"><Download className="w-5 h-5" /></button>
-                          </div>
+                          {!currentVideoUrl && (
+                            <>
+                              <div className="absolute top-2 left-2 flex gap-2">
+                                <span className="bg-indigo-600 text-white text-[10px] px-2 py-1 rounded font-bold uppercase">Result</span>
+                                <button onClick={() => setShowComparison(!showComparison)} className={`p-1 rounded text-[10px] font-bold transition-all ${showComparison ? 'bg-orange-500 text-white' : 'bg-black/50 text-white hover:bg-black/70'}`}>
+                                  {showComparison ? 'Exit Compare' : 'Compare'}
+                                </button>
+                              </div>
+                              
+                              <div className="absolute top-2 right-2 flex gap-2">
+                                <button onClick={() => toggleSaveCreation(resultImages[selectedResultIndex])} className={`p-2 rounded-full shadow-lg ${savedCreations.some(s => s.image === resultImages[selectedResultIndex]) ? 'bg-pink-500 text-white' : 'bg-white/90 dark:bg-slate-800/90 text-slate-400'}`}>
+                                  <Heart className={`w-5 h-5 ${savedCreations.some(s => s.image === resultImages[selectedResultIndex]) ? 'fill-white' : ''}`} />
+                                </button>
+                                <button onClick={() => downloadImage(resultImages[selectedResultIndex], `result.png`)} className="p-2 bg-white/90 dark:bg-slate-800/90 rounded-full shadow-lg"><Download className="w-5 h-5" /></button>
+                              </div>
+
+                              <button onClick={handleGenerateVideo} className="absolute bottom-4 right-4 flex items-center gap-2 px-4 py-2 bg-white/90 dark:bg-slate-800/90 backdrop-blur text-indigo-600 dark:text-indigo-400 font-bold rounded-full shadow-lg hover:bg-white hover:scale-105 transition-all group-hover:translate-y-0 translate-y-2 opacity-0 group-hover:opacity-100">
+                                <Video className="w-4 h-4" /> Animate (Veo)
+                              </button>
+                            </>
+                          )}
                         </div>
                         <div className="h-20 bg-slate-900 dark:bg-black flex items-center gap-2 px-3 overflow-x-auto scrollbar-hide">
                           {resultImages.map((img, idx) => (
-                            <button key={idx} onClick={() => setSelectedResultIndex(idx)} className={`flex-shrink-0 w-12 h-12 rounded border-2 transition-all ${selectedResultIndex === idx ? 'border-indigo-400 scale-110' : 'border-transparent opacity-60'}`}>
+                            <button key={idx} onClick={() => { setSelectedResultIndex(idx); setCurrentVideoUrl(undefined); }} className={`flex-shrink-0 w-12 h-12 rounded border-2 transition-all ${selectedResultIndex === idx ? 'border-indigo-400 scale-110' : 'border-transparent opacity-60'}`}>
                               <img src={img} className="w-full h-full object-cover" />
                             </button>
                           ))}
@@ -353,6 +424,28 @@ const App: React.FC = () => {
                             ))}
                           </div>
                         )}
+                        
+                        {/* Magic Refine Input */}
+                        <div className="p-3 bg-slate-50 dark:bg-slate-800 border-t dark:border-slate-700 flex gap-2">
+                          <div className="flex-1 relative">
+                            <MessageSquarePlus className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                            <input 
+                              type="text" 
+                              value={refineInstruction}
+                              onChange={(e) => setRefineInstruction(e.target.value)}
+                              placeholder="Magic Refine: 'Make it darker', 'Add snow', 'Change floor to wood'..." 
+                              className="w-full pl-9 pr-4 py-2 rounded-lg bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 text-sm focus:ring-2 focus:ring-indigo-500 outline-none"
+                              onKeyDown={(e) => e.key === 'Enter' && handleRefinePrompt()}
+                            />
+                          </div>
+                          <button 
+                            onClick={handleRefinePrompt}
+                            disabled={!refineInstruction || status === GenerationStatus.REFINING}
+                            className="p-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                          >
+                            {status === GenerationStatus.REFINING ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+                          </button>
+                        </div>
                       </div>
                     ) : (
                       <div className="text-slate-400 text-center flex flex-col items-center">
@@ -437,8 +530,11 @@ const App: React.FC = () => {
               <div className="flex items-center justify-between mb-4"><h3 className="font-bold text-lg flex items-center gap-2"><Bookmark className="w-5 h-5 text-indigo-400" /> Saved Gallery</h3></div>
               <div className="space-y-3">
                 {savedCreations.slice(0, 3).map(s => (
-                  <div key={s.id} onClick={() => { setSelectedImage(s.originalImage); setBackgroundPrompt(s.prompt); setResultImages([s.image]); setSelectedResultIndex(0); }} className="flex items-center gap-3 bg-white/10 p-2 rounded-lg cursor-pointer hover:bg-white/20 transition-colors">
-                    <div className="w-12 h-12 flex-shrink-0 bg-white dark:bg-slate-800 rounded overflow-hidden"><img src={s.image} className="w-full h-full object-cover" /></div>
+                  <div key={s.id} onClick={() => { setSelectedImage(s.originalImage); setBackgroundPrompt(s.prompt); setResultImages([s.image]); setSelectedResultIndex(0); if(s.videoUrl) setCurrentVideoUrl(s.videoUrl); }} className="flex items-center gap-3 bg-white/10 p-2 rounded-lg cursor-pointer hover:bg-white/20 transition-colors">
+                    <div className="w-12 h-12 flex-shrink-0 bg-white dark:bg-slate-800 rounded overflow-hidden relative">
+                      <img src={s.image} className="w-full h-full object-cover" />
+                      {s.videoUrl && <div className="absolute inset-0 flex items-center justify-center bg-black/30"><Video className="w-4 h-4 text-white" /></div>}
+                    </div>
                     <div className="flex-1 min-w-0"><p className="text-xs font-medium truncate italic opacity-80">"{s.prompt}"</p></div>
                   </div>
                 ))}
@@ -450,9 +546,9 @@ const App: React.FC = () => {
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
               <h3 className="font-bold text-slate-900 dark:text-white mb-4">Pro Tips</h3>
               <ul className="space-y-4 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">1</div> <span><b>Comparison:</b> Use the Compare tool to see exactly how AI transformed your lighting.</span></li>
-                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">2</div> <span><b>Social Presets:</b> Use 9:16 for IG Story and 1:1 for main feeds to ensure best fit.</span></li>
-                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">3</div> <span><b>AI Suggest:</b> Let AI analyze your product's shape and color for the perfect background match.</span></li>
+                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">1</div> <span><b>Magic Refine:</b> Don't rewrite the whole prompt. Just type "Add a coffee cup" and let AI handle it.</span></li>
+                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">2</div> <span><b>Cinematic Video:</b> Turn your best still shot into a high-end video ad with one click using Veo.</span></li>
+                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">3</div> <span><b>Social Presets:</b> Use 9:16 for IG Story and 1:1 for main feeds to ensure best fit.</span></li>
               </ul>
             </div>
           </div>
@@ -480,15 +576,21 @@ const App: React.FC = () => {
             <div className="flex-1 overflow-y-auto p-4 space-y-4">
               {historyTab === 'recent' ? (
                 history.map(h => (
-                  <div key={h.id} onClick={() => { setSelectedImage(h.originalImage); setBackgroundPrompt(h.prompt); setResultImages(h.resultImages); setSelectedResultIndex(h.selectedImageIndex); setShowHistory(false); }} className="group bg-slate-50 dark:bg-slate-800/50 rounded-xl border dark:border-slate-800 p-2 cursor-pointer hover:border-indigo-400">
-                    <img src={h.resultImages[h.selectedImageIndex]} className="aspect-video w-full object-contain bg-white dark:bg-slate-900 rounded-lg" />
+                  <div key={h.id} onClick={() => { setSelectedImage(h.originalImage); setBackgroundPrompt(h.prompt); setResultImages(h.resultImages); setSelectedResultIndex(h.selectedImageIndex); if(h.videoUrl) setCurrentVideoUrl(h.videoUrl); setShowHistory(false); }} className="group bg-slate-50 dark:bg-slate-800/50 rounded-xl border dark:border-slate-800 p-2 cursor-pointer hover:border-indigo-400">
+                    <div className="aspect-video w-full bg-white dark:bg-slate-900 rounded-lg relative overflow-hidden">
+                       <img src={h.resultImages[h.selectedImageIndex]} className="w-full h-full object-contain" />
+                       {h.videoUrl && <div className="absolute top-2 right-2 bg-indigo-600 p-1 rounded-full"><Video className="w-3 h-3 text-white" /></div>}
+                    </div>
                     <div className="mt-2 px-1 flex items-center justify-between"><p className="text-[9px] font-bold text-slate-400 uppercase">{new Date(h.timestamp).toLocaleDateString()}</p><button onClick={e => { e.stopPropagation(); setHistory(prev => prev.filter(item => item.id !== h.id)); }} className="text-slate-400 hover:text-red-500"><Trash2 className="w-3 h-3" /></button></div>
                   </div>
                 ))
               ) : (
                 savedCreations.map(s => (
-                  <div key={s.id} onClick={() => { setSelectedImage(s.originalImage); setBackgroundPrompt(s.prompt); setResultImages([s.image]); setSelectedResultIndex(0); setShowHistory(false); }} className="group bg-slate-50 dark:bg-slate-800/50 rounded-xl border dark:border-pink-900/30 p-2 cursor-pointer hover:border-pink-400">
-                    <img src={s.image} className="aspect-video w-full object-contain bg-white dark:bg-slate-900 rounded-lg" />
+                  <div key={s.id} onClick={() => { setSelectedImage(s.originalImage); setBackgroundPrompt(s.prompt); setResultImages([s.image]); setSelectedResultIndex(0); if(s.videoUrl) setCurrentVideoUrl(s.videoUrl); setShowHistory(false); }} className="group bg-slate-50 dark:bg-slate-800/50 rounded-xl border dark:border-pink-900/30 p-2 cursor-pointer hover:border-pink-400">
+                    <div className="aspect-video w-full bg-white dark:bg-slate-900 rounded-lg relative overflow-hidden">
+                       <img src={s.image} className="w-full h-full object-contain" />
+                       {s.videoUrl && <div className="absolute top-2 right-2 bg-pink-500 p-1 rounded-full"><Video className="w-3 h-3 text-white" /></div>}
+                    </div>
                     <div className="mt-2 px-1 flex items-center justify-between"><p className="text-[9px] font-bold text-pink-400 uppercase">Saved</p><button onClick={e => { e.stopPropagation(); setSavedCreations(prev => prev.filter(item => item.id !== s.id)); }} className="text-slate-400 hover:text-red-500"><Trash2 className="w-3 h-3" /></button></div>
                   </div>
                 ))
@@ -499,7 +601,7 @@ const App: React.FC = () => {
       )}
 
       <footer className="py-8 border-t dark:border-slate-800 bg-white dark:bg-slate-950 text-center text-xs text-slate-400">
-        <p>Powered by Gemini 2.5 Flash Image. All data stored locally via IndexedDB.</p>
+        <p>Powered by Gemini 2.5 Flash Image & Veo 3.1. All data stored locally via IndexedDB.</p>
       </footer>
     </div>
   );

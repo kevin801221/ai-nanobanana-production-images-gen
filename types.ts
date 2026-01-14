@@ -6,6 +6,7 @@ export interface GenerationHistory {
   selectedImageIndex: number;
   prompt: string;
   timestamp: number;
+  videoUrl?: string; // New: Store generated video blob URL
 }
 
 export interface SavedCreation {
@@ -14,6 +15,7 @@ export interface SavedCreation {
   originalImage: string;
   prompt: string;
   timestamp: number;
+  videoUrl?: string; // New: Store saved video blob URL
 }
 
 export interface AIConfig {
@@ -34,5 +36,7 @@ export enum GenerationStatus {
   GENERATING = 'GENERATING',
   SUCCESS = 'SUCCESS',
   ERROR = 'ERROR',
-  SUGGESTING = 'SUGGESTING'
+  SUGGESTING = 'SUGGESTING',
+  REFINING = 'REFINING',
+  GENERATING_VIDEO = 'GENERATING_VIDEO'
 }
