@@ -1,0 +1,7 @@
+{
+  "name": "Product Scene AI",
+  "description": "Extract physical products from photos and seamlessly place them into any new background using Gemini 2.5 Flash Image AI.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
