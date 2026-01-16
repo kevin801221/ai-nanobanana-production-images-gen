@@ -54,6 +54,7 @@ Here is what we are shipping next:
 ### Phase 3: Virtual Production
 - [ ] **💃 AI Virtual Models**: Place your apparel or accessories on diverse, realistic AI fashion models without booking talent.
 - [ ] **🌐 Community Prompt Marketplace**: Share and remix winning prompt templates with the community.
+- [ ] **🏗️ Next.js Migration**: Transition to Server Actions for enhanced security and enterprise features. [Read the Migration Guide](./docs/NEXTJS_MIGRATION.md).
 
 > **Give us a ⭐ Star if you want to see these features!**
 

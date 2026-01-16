@@ -1,15 +1,16 @@
+
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { 
   Upload, ImageIcon, Sparkles, History, Download, RefreshCw, 
   X, Camera, Circle, Crop, Layers, Heart, Trash2, Bookmark, 
   Sun, Moon, Box, Tent, Crown, Cpu, Coffee, Settings2, ChevronDown, ChevronUp, Info,
   Undo, Redo, Wand2, Maximize2, SlidersHorizontal, Instagram, Facebook, Tv,
-  Video, Play, MessageSquarePlus, Send, Loader2, Eraser, PenTool
+  Video, Play, MessageSquarePlus, Send, Loader2, Eraser, PenTool, Palette, Plus, Check
 } from 'lucide-react';
 import Cropper, { Area } from 'react-easy-crop';
 import { generateProductSceneVariations, suggestPrompts, refinePromptWithInstruction, generateProductVideo, eraseObjectFromImage } from './services/geminiService';
-import { GenerationHistory, GenerationStatus, SavedCreation, AIConfig, ImageFilters } from './types';
-import { getHistoryItems, saveHistoryItems, getFavoriteItems, saveFavoriteItems } from './services/storageService';
+import { GenerationHistory, GenerationStatus, SavedCreation, AIConfig, ImageFilters, BrandKit } from './types';
+import { getHistoryItems, saveHistoryItems, getFavoriteItems, saveFavoriteItems, saveBrandKit, getBrandKit } from './services/storageService';
 
 const PROMPT_CATEGORIES = [
   { id: 'minimalist', name: 'Minimalist', icon: <Box className="w-4 h-4" />, prompts: ["Clean white studio background, soft shadows, geometric pedestals", "Soft beige textured wall, minimalist concrete platform"] },
@@ -31,6 +32,7 @@ const App: React.FC = () => {
 
   const [history, setHistory] = useState<GenerationHistory[]>([]);
   const [savedCreations, setSavedCreations] = useState<SavedCreation[]>([]);
+  const [brandKit, setBrandKit] = useState<BrandKit>({ isEnabled: false, logoImage: null, colors: ['#000000', '#FFFFFF'], brandVoice: 'Professional', fontStyle: 'Modern Sans' });
   const [isLoadingStorage, setIsLoadingStorage] = useState(true);
 
   const [selectedImage, setSelectedImage] = useState<string | null>(null);
@@ -61,6 +63,9 @@ const App: React.FC = () => {
 
   const [showHistory, setShowHistory] = useState(false);
   const [historyTab, setHistoryTab] = useState<'recent' | 'favorites'>('recent');
+  const [showBrandKit, setShowBrandKit] = useState(false);
+  const [showLogoOverlay, setShowLogoOverlay] = useState(false);
+
   const [isCameraActive, setIsCameraActive] = useState(false);
 
   // Cropping states
@@ -84,6 +89,7 @@ const App: React.FC = () => {
   const eraserContainerRef = useRef<HTMLDivElement>(null);
   
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const logoInputRef = useRef<HTMLInputElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -96,9 +102,14 @@ const App: React.FC = () => {
   useEffect(() => {
     const loadInitialData = async () => {
       try {
-        const [storedHistory, storedFavorites] = await Promise.all([getHistoryItems(), getFavoriteItems()]);
+        const [storedHistory, storedFavorites, storedBrandKit] = await Promise.all([
+            getHistoryItems(), 
+            getFavoriteItems(),
+            getBrandKit()
+        ]);
         setHistory(storedHistory);
         setSavedCreations(storedFavorites);
+        if (storedBrandKit) setBrandKit(storedBrandKit);
       } catch (err) { console.error(err); } finally { setIsLoadingStorage(false); }
     };
     loadInitialData();
@@ -106,6 +117,7 @@ const App: React.FC = () => {
 
   useEffect(() => { if (!isLoadingStorage) saveHistoryItems(history); }, [history, isLoadingStorage]);
   useEffect(() => { if (!isLoadingStorage) saveFavoriteItems(savedCreations); }, [savedCreations, isLoadingStorage]);
+  useEffect(() => { if (!isLoadingStorage) saveBrandKit(brandKit); }, [brandKit, isLoadingStorage]);
 
   useEffect(() => {
     if (!isCropping) { setPastCrops([]); setFutureCrops([]); setStableCropState(null); return; }
@@ -188,6 +200,15 @@ const App: React.FC = () => {
     }
   };
 
+  const handleLogoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => { setBrandKit(prev => ({ ...prev, logoImage: reader.result as string })); };
+      reader.readAsDataURL(file);
+    }
+  };
+
   const startCamera = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
@@ -233,7 +254,8 @@ const App: React.FC = () => {
     if (!selectedImage || !backgroundPrompt) return;
     try {
       setStatus(GenerationStatus.GENERATING); setError(null); setCurrentVideoUrl(undefined);
-      const results = await generateProductSceneVariations(selectedImage, mimeType, backgroundPrompt, variationCount, aiConfig);
+      // Pass brandKit to generation service
+      const results = await generateProductSceneVariations(selectedImage, mimeType, backgroundPrompt, variationCount, aiConfig, brandKit);
       setResultImages(results); setSelectedResultIndex(0); setStatus(GenerationStatus.SUCCESS);
       setHistory(prev => [{ id: Date.now().toString(), originalImage: selectedImage, resultImages: results, selectedImageIndex: 0, prompt: backgroundPrompt, timestamp: Date.now() }, ...prev]);
     } catch (err: any) { setError(err.message); setStatus(GenerationStatus.ERROR); }
@@ -258,7 +280,7 @@ const App: React.FC = () => {
       setRefineInstruction('');
       // Auto trigger generation after refinement
       setStatus(GenerationStatus.GENERATING);
-      const results = await generateProductSceneVariations(selectedImage!, mimeType, newPrompt, variationCount, aiConfig);
+      const results = await generateProductSceneVariations(selectedImage!, mimeType, newPrompt, variationCount, aiConfig, brandKit);
       setResultImages(results); setSelectedResultIndex(0); setStatus(GenerationStatus.SUCCESS);
       setHistory(prev => [{ id: Date.now().toString(), originalImage: selectedImage!, resultImages: results, selectedImageIndex: 0, prompt: newPrompt, timestamp: Date.now() }, ...prev]);
     } catch (e) { setStatus(GenerationStatus.IDLE); setError("Failed to refine prompt"); }
@@ -282,7 +304,7 @@ const App: React.FC = () => {
 
     try {
       setStatus(GenerationStatus.GENERATING_VIDEO);
-      const videoUrl = await generateProductVideo(currentImage, backgroundPrompt);
+      const videoUrl = await generateProductVideo(currentImage, backgroundPrompt, brandKit);
       setCurrentVideoUrl(videoUrl);
       setStatus(GenerationStatus.SUCCESS);
       
@@ -301,8 +323,6 @@ const App: React.FC = () => {
 
   const handleEraseStart = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isEraserMode || !eraserCanvasRef.current) return;
-    
-    // Prevent scrolling on touch
     if (e.type === 'touchstart') e.preventDefault();
 
     const canvas = eraserCanvasRef.current;
@@ -310,7 +330,6 @@ const App: React.FC = () => {
     const clientX = 'touches' in e ? e.touches[0].clientX : (e as React.MouseEvent).clientX;
     const clientY = 'touches' in e ? e.touches[0].clientY : (e as React.MouseEvent).clientY;
     
-    // Scale coordinates from screen space to canvas internal space
     const scaleX = canvas.width / rect.width;
     const scaleY = canvas.height / rect.height;
     
@@ -323,10 +342,7 @@ const App: React.FC = () => {
   const handleEraseMove = (e: React.MouseEvent | React.TouchEvent) => {
     if (!isEraserMode || !eraserCanvasRef.current) return;
     const lastPath = eraserPaths[eraserPaths.length - 1];
-    // Check if we are currently drawing
     if (!lastPath || !lastPath[lastPath.length - 1].dragging) return;
-    
-    // Prevent scrolling
     if (e.type === 'touchmove') e.preventDefault();
     
     const canvas = eraserCanvasRef.current;
@@ -340,7 +356,6 @@ const App: React.FC = () => {
     const x = (clientX - rect.left) * scaleX;
     const y = (clientY - rect.top) * scaleY;
 
-    // Append point to current path
     const newPaths = [...eraserPaths];
     newPaths[newPaths.length - 1].push({ x, y, dragging: true, size: brushSize });
     setEraserPaths(newPaths);
@@ -358,11 +373,8 @@ const App: React.FC = () => {
 
   const handleApplyEraser = async () => {
     if (eraserPaths.length === 0 || !resultImages[selectedResultIndex]) return;
-
     try {
       setStatus(GenerationStatus.ERASING);
-      
-      // Generate Mask Image
       const canvas = document.createElement('canvas');
       const ctx = canvas.getContext('2d');
       if (!ctx || !eraserCanvasRef.current) return;
@@ -370,11 +382,8 @@ const App: React.FC = () => {
       canvas.width = eraserCanvasRef.current.width;
       canvas.height = eraserCanvasRef.current.height;
 
-      // Fill Black
       ctx.fillStyle = 'black';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-      // Draw Paths White
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       ctx.strokeStyle = 'white';
@@ -392,21 +401,11 @@ const App: React.FC = () => {
 
       const maskDataUrl = canvas.toDataURL('image/png');
       const originalResult = resultImages[selectedResultIndex];
-
       const newImage = await eraseObjectFromImage(originalResult, maskDataUrl);
 
-      // Update State
-      setResultImages(prev => {
-        const updated = [...prev];
-        updated[selectedResultIndex] = newImage;
-        return updated;
-      });
-      
-      // Update History
+      setResultImages(prev => { const updated = [...prev]; updated[selectedResultIndex] = newImage; return updated; });
       setHistory(prev => {
          const newHistory = [...prev];
-         // Find current history item if possible, or just skip history update for edit?
-         // Better to update recent item
          if (newHistory.length > 0 && newHistory[0].id === history[0].id) {
             const updatedResults = [...newHistory[0].resultImages];
             updatedResults[selectedResultIndex] = newImage;
@@ -418,10 +417,9 @@ const App: React.FC = () => {
       setIsEraserMode(false);
       setEraserPaths([]);
       setStatus(GenerationStatus.SUCCESS);
-
     } catch (e: any) {
       setError("Eraser failed: " + e.message);
-      setStatus(GenerationStatus.SUCCESS); // Revert to view
+      setStatus(GenerationStatus.SUCCESS);
     }
   };
 
@@ -444,6 +442,12 @@ const App: React.FC = () => {
             <h1 className="font-bold text-xl text-slate-900 dark:text-white">ProductScene AI <span className="text-xs bg-indigo-100 dark:bg-indigo-900/40 text-indigo-600 px-2 py-0.5 rounded ml-2">PRO</span></h1>
           </div>
           <div className="flex items-center gap-2">
+             <button onClick={() => setShowBrandKit(true)} className={`hidden md:flex items-center gap-2 px-3 py-2 text-sm font-bold rounded-lg transition-all ${brandKit.isEnabled ? 'bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400' : 'text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800'}`}>
+                <Palette className="w-4 h-4" />
+                <span className="hidden lg:inline">Brand Kit</span>
+                {brandKit.isEnabled && <div className="w-2 h-2 bg-indigo-500 rounded-full animate-pulse" />}
+             </button>
+            <div className="w-px h-6 bg-slate-200 dark:bg-slate-800 mx-1" />
             <button onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} className="p-2 text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg">
               {theme === 'light' ? <Moon className="w-5 h-5" /> : <Sun className="w-5 h-5" />}
             </button>
@@ -519,7 +523,7 @@ const App: React.FC = () => {
                   </div>
 
                   <div className="flex-1 relative bg-slate-200/50 dark:bg-slate-800/30 rounded-lg overflow-hidden border dark:border-slate-700 flex flex-col items-center justify-center">
-                    {status === GenerationStatus.GENERATING || status === GenerationStatus.GENERATING_VIDEO || status === GenerationStatus.ERASING ? (
+                    {status === GenerationStatus.GENERATING || status === GenerationStatus.GENERATING_VIDEO || status === GenerationStatus.ERASING || status === GenerationStatus.REFINING ? (
                       <div className="flex flex-col items-center gap-4 text-center p-6 animate-pulse">
                         {status === GenerationStatus.GENERATING_VIDEO ? <Video className="w-16 h-16 text-indigo-600 animate-bounce" /> : 
                          status === GenerationStatus.ERASING ? <Eraser className="w-16 h-16 text-indigo-600 animate-pulse" /> :
@@ -527,7 +531,7 @@ const App: React.FC = () => {
                         <p className="font-bold dark:text-white">
                           {status === GenerationStatus.GENERATING_VIDEO ? 'Rendering Cinematic Video...' : 
                            status === GenerationStatus.ERASING ? 'Erasing Object...' :
-                           'Generating Scenes...'}
+                           status === GenerationStatus.REFINING ? 'Refining Prompt...' : 'Generating Scenes...'}
                         </p>
                       </div>
                     ) : resultImages.length > 0 ? (
@@ -558,13 +562,7 @@ const App: React.FC = () => {
                                 <canvas 
                                     ref={eraserCanvasRef}
                                     className="absolute left-1/2 top-1/2 transform -translate-x-1/2 -translate-y-1/2"
-                                    style={{
-                                        maxWidth: '100%',
-                                        maxHeight: '100%',
-                                        width: 'auto',
-                                        height: 'auto',
-                                        objectFit: 'contain'
-                                    }}
+                                    style={{ maxWidth: '100%', maxHeight: '100%', width: 'auto', height: 'auto', objectFit: 'contain' }}
                                 />
                                 <div className="absolute top-4 left-1/2 -translate-x-1/2 bg-black/70 text-white px-4 py-2 rounded-full text-xs font-bold pointer-events-none">
                                     Eraser Mode: Paint over areas to remove
@@ -579,17 +577,24 @@ const App: React.FC = () => {
                                     <button onClick={handleApplyEraser} className="px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold text-xs shadow-lg">Apply Eraser</button>
                                 </div>
                             </div>
-                          ) : showComparison ? (
-                            <div className="relative w-full h-full overflow-hidden">
-                              <img src={resultImages[selectedResultIndex]} style={{ filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)` }} className="absolute inset-0 w-full h-full object-contain" />
-                              <div className="absolute inset-0 w-full h-full pointer-events-none" style={{ clipPath: `inset(0 ${100 - sliderPos}% 0 0)` }}>
-                                <img src={selectedImage!} className="w-full h-full object-contain bg-white dark:bg-slate-900" />
-                              </div>
-                              <input type="range" min="0" max="100" value={sliderPos} onChange={(e) => setSliderPos(Number(e.target.value))} className="absolute bottom-0 left-0 w-full h-1 opacity-0 group-hover:opacity-100 cursor-ew-resize z-10" />
-                              <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-xl z-20 pointer-events-none" style={{ left: `${sliderPos}%` }} />
-                            </div>
                           ) : (
-                            <img src={resultImages[selectedResultIndex]} style={{ filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)` }} className="max-w-full max-h-full object-contain" />
+                            <div className="relative w-full h-full flex items-center justify-center">
+                                <img src={resultImages[selectedResultIndex]} style={{ filter: `brightness(${filters.brightness}%) contrast(${filters.contrast}%) saturate(${filters.saturation}%)` }} className="max-w-full max-h-full object-contain" />
+                                {showLogoOverlay && brandKit.isEnabled && brandKit.logoImage && (
+                                    <img 
+                                        src={brandKit.logoImage} 
+                                        className="absolute bottom-4 right-4 w-20 h-auto opacity-80 pointer-events-none drop-shadow-lg"
+                                        alt="Brand Logo"
+                                    />
+                                )}
+                                {showComparison && (
+                                    <div className="absolute inset-0 w-full h-full pointer-events-none" style={{ clipPath: `inset(0 ${100 - sliderPos}% 0 0)` }}>
+                                        <img src={selectedImage!} className="w-full h-full object-contain bg-white dark:bg-slate-900" />
+                                        <input type="range" min="0" max="100" value={sliderPos} onChange={(e) => setSliderPos(Number(e.target.value))} className="absolute bottom-0 left-0 w-full h-1 opacity-0 group-hover:opacity-100 cursor-ew-resize z-10 pointer-events-auto" />
+                                        <div className="absolute top-0 bottom-0 w-0.5 bg-white shadow-xl z-20 pointer-events-none" style={{ left: `${sliderPos}%` }} />
+                                    </div>
+                                )}
+                            </div>
                           )}
                           
                           {!currentVideoUrl && !isEraserMode && (
@@ -609,6 +614,11 @@ const App: React.FC = () => {
                               </div>
 
                               <div className="absolute bottom-4 right-4 flex flex-col gap-2">
+                                {brandKit.isEnabled && brandKit.logoImage && (
+                                    <button onClick={() => setShowLogoOverlay(!showLogoOverlay)} className={`flex items-center gap-2 px-4 py-2 backdrop-blur font-bold rounded-full shadow-lg transition-all opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0 duration-300 delay-100 ${showLogoOverlay ? 'bg-indigo-600 text-white' : 'bg-white/90 dark:bg-slate-800/90 text-slate-700 dark:text-slate-200'}`}>
+                                        <Crown className="w-4 h-4" /> Toggle Logo
+                                    </button>
+                                )}
                                 <button onClick={() => setIsEraserMode(true)} className="flex items-center gap-2 px-4 py-2 bg-white/90 dark:bg-slate-800/90 backdrop-blur text-slate-700 dark:text-slate-200 font-bold rounded-full shadow-lg hover:bg-white hover:scale-105 transition-all opacity-0 group-hover:opacity-100 translate-y-2 group-hover:translate-y-0 duration-300 delay-75">
                                     <Eraser className="w-4 h-4" /> AI Eraser
                                 </button>
@@ -640,7 +650,6 @@ const App: React.FC = () => {
                           </div>
                         )}
                         
-                        {/* Magic Refine Input */}
                         {!isEraserMode && (
                         <div className="p-3 bg-slate-50 dark:bg-slate-800 border-t dark:border-slate-700 flex gap-2">
                           <div className="flex-1 relative">
@@ -698,6 +707,23 @@ const App: React.FC = () => {
 
                 <textarea value={backgroundPrompt} onChange={e => setBackgroundPrompt(e.target.value)} placeholder="e.g., A minimalist white marble podium with soft morning shadows..." className="w-full min-h-[100px] p-4 rounded-xl border dark:border-slate-700 bg-white dark:bg-slate-800 text-slate-700 dark:text-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none" disabled={status === GenerationStatus.GENERATING} />
               </div>
+
+              {/* Brand Kit Indicator */}
+              {brandKit.isEnabled && (
+                 <div className="flex items-center justify-between bg-indigo-50 dark:bg-indigo-900/20 p-3 rounded-lg border border-indigo-100 dark:border-indigo-900/30">
+                     <div className="flex items-center gap-2">
+                         <Palette className="w-4 h-4 text-indigo-600" />
+                         <span className="text-xs font-bold text-indigo-700 dark:text-indigo-300">Active Brand Kit:</span>
+                         <div className="flex -space-x-1">
+                             {brandKit.colors.map((c, i) => (
+                                 <div key={i} className="w-3 h-3 rounded-full border border-white dark:border-slate-800" style={{ backgroundColor: c }} />
+                             ))}
+                         </div>
+                         <span className="text-[10px] opacity-70">({brandKit.brandVoice})</span>
+                     </div>
+                     <button onClick={() => setShowBrandKit(true)} className="text-[10px] text-indigo-600 underline font-bold">Edit</button>
+                 </div>
+              )}
 
               <div className="space-y-4">
                 <div className="flex gap-2 overflow-x-auto pb-1 scrollbar-hide">
@@ -763,14 +789,82 @@ const App: React.FC = () => {
             <div className="bg-white dark:bg-slate-900 rounded-2xl border border-slate-200 dark:border-slate-800 p-6 shadow-sm">
               <h3 className="font-bold text-slate-900 dark:text-white mb-4">Pro Tips</h3>
               <ul className="space-y-4 text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">1</div> <span><b>Magic Refine:</b> Don't rewrite the whole prompt. Just type "Add a coffee cup" and let AI handle it.</span></li>
-                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">2</div> <span><b>Cinematic Video:</b> Turn your best still shot into a high-end video ad with one click using Veo.</span></li>
+                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">1</div> <span><b>Brand Kit:</b> Upload your logo and set colors to ensure every generated image aligns with your brand identity.</span></li>
+                <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">2</div> <span><b>Magic Refine:</b> Don't rewrite the whole prompt. Just type "Add a coffee cup" and let AI handle it.</span></li>
                 <li className="flex gap-3"><div className="w-5 h-5 bg-indigo-50 dark:bg-indigo-900/20 text-indigo-600 rounded-full flex-shrink-0 flex items-center justify-center font-bold">3</div> <span><b>AI Eraser:</b> Use the eraser tool to remove unwanted artifacts or objects. The AI will fill in the background automatically.</span></li>
               </ul>
             </div>
           </div>
         </div>
       </main>
+
+      {/* Brand Kit Modal */}
+      {showBrandKit && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+              <div className="bg-white dark:bg-slate-900 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+                  <div className="p-4 border-b dark:border-slate-800 flex justify-between items-center sticky top-0 bg-white dark:bg-slate-900 z-10">
+                      <h2 className="text-lg font-bold flex items-center gap-2 dark:text-white"><Palette className="w-5 h-5 text-indigo-600" /> Brand Kit</h2>
+                      <button onClick={() => setShowBrandKit(false)} className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-full"><X className="w-5 h-5" /></button>
+                  </div>
+                  <div className="p-6 space-y-6">
+                      <div className="flex items-center gap-4 bg-indigo-50 dark:bg-indigo-900/20 p-4 rounded-xl border border-indigo-100 dark:border-indigo-900/30">
+                          <label className="relative inline-flex items-center cursor-pointer">
+                              <input type="checkbox" checked={brandKit.isEnabled} onChange={(e) => setBrandKit(prev => ({ ...prev, isEnabled: e.target.checked }))} className="sr-only peer" />
+                              <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-indigo-300 dark:peer-focus:ring-indigo-800 rounded-full peer dark:bg-slate-700 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all dark:border-slate-600 peer-checked:bg-indigo-600"></div>
+                              <span className="ml-3 text-sm font-bold text-slate-700 dark:text-slate-200">Enable Brand Kit</span>
+                          </label>
+                      </div>
+
+                      <div className="space-y-2">
+                          <label className="text-xs font-bold uppercase text-slate-500">Brand Logo</label>
+                          <div className="flex items-center gap-4">
+                              <div className="w-20 h-20 bg-slate-100 dark:bg-slate-800 rounded-lg border-2 border-dashed border-slate-300 dark:border-slate-700 flex items-center justify-center overflow-hidden relative group cursor-pointer" onClick={() => logoInputRef.current?.click()}>
+                                  {brandKit.logoImage ? (
+                                      <img src={brandKit.logoImage} className="w-full h-full object-contain p-1" />
+                                  ) : (
+                                      <Upload className="w-6 h-6 text-slate-400" />
+                                  )}
+                                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"><span className="text-xs text-white font-bold">Change</span></div>
+                              </div>
+                              <div className="flex-1">
+                                  <p className="text-xs text-slate-500 mb-2">Upload a transparent PNG logo. You can toggle this as an overlay on generated images.</p>
+                                  <input type="file" ref={logoInputRef} className="hidden" accept="image/png" onChange={handleLogoUpload} />
+                                  <button onClick={() => logoInputRef.current?.click()} className="text-xs font-bold text-indigo-600 border border-indigo-200 px-3 py-1 rounded hover:bg-indigo-50">Upload Logo</button>
+                                  {brandKit.logoImage && <button onClick={() => setBrandKit(prev => ({...prev, logoImage: null}))} className="ml-2 text-xs text-red-500 hover:text-red-700">Remove</button>}
+                              </div>
+                          </div>
+                      </div>
+
+                      <div className="space-y-2">
+                          <label className="text-xs font-bold uppercase text-slate-500">Brand Colors</label>
+                          <div className="flex flex-wrap gap-2">
+                              {brandKit.colors.map((color, index) => (
+                                  <div key={index} className="relative group">
+                                      <div className="w-10 h-10 rounded-full border shadow-sm cursor-pointer" style={{ backgroundColor: color }} />
+                                      <button onClick={() => setBrandKit(prev => ({ ...prev, colors: prev.colors.filter((_, i) => i !== index) }))} className="absolute -top-1 -right-1 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"><X className="w-3 h-3" /></button>
+                                  </div>
+                              ))}
+                              {brandKit.colors.length < 5 && (
+                                  <label className="w-10 h-10 rounded-full border-2 border-dashed border-slate-300 flex items-center justify-center cursor-pointer hover:border-indigo-400 text-slate-400 hover:text-indigo-500">
+                                      <Plus className="w-4 h-4" />
+                                      <input type="color" className="opacity-0 absolute w-0 h-0" onChange={(e) => setBrandKit(prev => ({ ...prev, colors: [...prev.colors, e.target.value] }))} />
+                                  </label>
+                              )}
+                          </div>
+                          <p className="text-xs text-slate-500">Add up to 5 primary brand colors.</p>
+                      </div>
+
+                      <div className="space-y-2">
+                          <label className="text-xs font-bold uppercase text-slate-500">Brand Voice & Style</label>
+                          <input type="text" value={brandKit.brandVoice} onChange={(e) => setBrandKit(prev => ({ ...prev, brandVoice: e.target.value }))} className="w-full px-3 py-2 rounded-lg border dark:border-slate-700 bg-slate-50 dark:bg-slate-800 text-sm" placeholder="e.g. Minimalist, Corporate, Playful..." />
+                      </div>
+                  </div>
+                  <div className="p-4 border-t dark:border-slate-800 bg-slate-50 dark:bg-slate-900 rounded-b-2xl flex justify-end">
+                      <button onClick={() => setShowBrandKit(false)} className="px-6 py-2 bg-indigo-600 text-white font-bold rounded-lg hover:bg-indigo-700">Done</button>
+                  </div>
+              </div>
+          </div>
+      )}
 
       {showHistory && (
         <div className="fixed inset-0 z-50 flex justify-end">

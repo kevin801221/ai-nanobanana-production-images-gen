@@ -1,6 +1,6 @@
 
 import { GoogleGenAI, GenerateContentResponse, Type } from "@google/genai";
-import { AIConfig } from "../types";
+import { AIConfig, BrandKit } from "../types";
 
 const getAIClient = () => {
   // Always create a new client to ensure latest API key is used (especially after Veo key selection)
@@ -60,14 +60,28 @@ export const generateSingleProductScene = async (
   mimeType: string,
   backgroundPrompt: string,
   variationId: number,
-  aiConfig: AIConfig
+  aiConfig: AIConfig,
+  brandKit?: BrandKit
 ): Promise<string> => {
   const ai = getAIClient();
   
+  let brandInstruction = "";
+  if (brandKit && brandKit.isEnabled) {
+    const colors = brandKit.colors.join(', ');
+    brandInstruction = `
+    STRICT BRAND GUIDELINES:
+    - Use the following color palette for the background/props: ${colors}.
+    - The brand style/mood is: ${brandKit.brandVoice}.
+    - Ensure the scene strictly adheres to this aesthetic.
+    `;
+  }
+
   const prompt = `Task: Professional Product Background Replacement.
     1. Identify the primary product or object in the image.
     2. Extract and isolate this object perfectly, maintaining its original colors, textures, and details.
-    3. Generate a new background described as: "${backgroundPrompt}". (Unique Variation ID: ${variationId}-${Date.now()})
+    3. Generate a new background described as: "${backgroundPrompt}".
+    ${brandInstruction}
+    (Unique Variation ID: ${variationId}-${Date.now()})
     4. Seamlessly integrate the original object into this new scene.
     5. Ensure realistic lighting, matching shadows, and perspective.
     6. The result must be a high-quality, professional studio product photograph.`;
@@ -112,10 +126,11 @@ export const generateProductSceneVariations = async (
   mimeType: string,
   backgroundPrompt: string,
   count: number = 3,
-  aiConfig: AIConfig
+  aiConfig: AIConfig,
+  brandKit?: BrandKit
 ): Promise<string[]> => {
   const tasks = Array.from({ length: count }, (_, i) => 
-    generateSingleProductScene(base64Image, mimeType, backgroundPrompt, i, aiConfig)
+    generateSingleProductScene(base64Image, mimeType, backgroundPrompt, i, aiConfig, brandKit)
   );
   
   return Promise.all(tasks);
@@ -127,7 +142,6 @@ export const eraseObjectFromImage = async (
 ): Promise<string> => {
   const ai = getAIClient();
   
-  // Prompt instructions for inpainting using the mask
   const prompt = `The second image provided is a mask where white pixels indicate the area to be removed (erased). 
   Task: Modify the first image by removing the objects or artifacts covered by the white mask area. 
   Fill in the erased area seamlessly to match the surrounding background texture, lighting, and context. 
@@ -140,7 +154,7 @@ export const eraseObjectFromImage = async (
         {
           inlineData: {
             data: image.split(',')[1],
-            mimeType: 'image/png', // Assuming base64 is png or convert
+            mimeType: 'image/png', 
           },
         },
         {
@@ -169,36 +183,39 @@ export const eraseObjectFromImage = async (
   throw new Error("No image data found in response");
 };
 
-export const generateProductVideo = async (image: string, prompt: string): Promise<string> => {
+export const generateProductVideo = async (image: string, prompt: string, brandKit?: BrandKit): Promise<string> => {
   const ai = getAIClient();
   
-  // Use a simplified prompt for video that focuses on motion and atmosphere
-  const videoPrompt = `Cinematic product video, ${prompt}, subtle professional camera motion, high quality, 4k`;
+  let brandInstruction = "";
+  if (brandKit && brandKit.isEnabled) {
+      const colors = brandKit.colors.join(', ');
+      brandInstruction = `in the style of ${brandKit.brandVoice}, utilizing brand colors ${colors} where possible,`;
+  }
+
+  const videoPrompt = `Cinematic product video, ${prompt}, ${brandInstruction} subtle professional camera motion, high quality, 4k`;
 
   let operation = await ai.models.generateVideos({
     model: 'veo-3.1-fast-generate-preview',
     prompt: videoPrompt,
     image: {
       imageBytes: image.split(',')[1],
-      mimeType: 'image/png', // Assuming output is PNG
+      mimeType: 'image/png', 
     },
     config: {
       numberOfVideos: 1,
       resolution: '720p',
-      aspectRatio: '16:9' // Veo supports 16:9 or 9:16. Defaulting to 16:9 for cinematic look.
+      aspectRatio: '16:9'
     }
   });
 
-  // Poll for completion
   while (!operation.done) {
-    await new Promise(resolve => setTimeout(resolve, 5000)); // Poll every 5s
+    await new Promise(resolve => setTimeout(resolve, 5000));
     operation = await ai.operations.getVideosOperation({operation: operation});
   }
 
   const downloadLink = operation.response?.generatedVideos?.[0]?.video?.uri;
   if (!downloadLink) throw new Error("Video generation failed to return a URI");
 
-  // Fetch the video bytes
   const response = await fetch(`${downloadLink}&key=${process.env.API_KEY}`);
   if (!response.ok) throw new Error("Failed to download generated video");
   

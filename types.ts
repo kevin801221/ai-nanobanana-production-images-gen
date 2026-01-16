@@ -30,6 +30,14 @@ export interface ImageFilters {
   saturation: number;
 }
 
+export interface BrandKit {
+  isEnabled: boolean;
+  logoImage: string | null; // Base64
+  colors: string[];
+  brandVoice: string; // e.g. "Minimalist", "Playful"
+  fontStyle: string; // e.g. "Modern Sans"
+}
+
 export enum GenerationStatus {
   IDLE = 'IDLE',
   UPLOADING = 'UPLOADING',
